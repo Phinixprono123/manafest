@@ -1,5 +1,3 @@
-# pkgmanager.py
-
 import os
 import logging
 import asyncio
@@ -19,7 +17,6 @@ from manafest.utils.errors import handle_errors
 from manafest.utils.cache import read_registry, write_registry
 from manafest.backends import default, aur, github, gitlab, pypi, bitbucket
 
-# Silence verbose HTTP logs
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 console = Console()
@@ -53,7 +50,7 @@ def install(name, source):
     if not name:
         raise ValueError("install requires a package name")
 
-    # Try to fetch package metadata for panel
+    # Try to get package metadata for panel
     info_data = {}
     if hasattr(BACKENDS[source], "info"):
         try:
@@ -63,7 +60,6 @@ def install(name, source):
         except Exception:
             info_data = {}
 
-    # Build install panel
     lines = [
         f"[bold]Package[/bold]: {name}",
         f"[bold]Source[/bold]: {source.capitalize()}",
@@ -79,7 +75,7 @@ def install(name, source):
     )
     console.print(panel)
 
-    # Ask user to confirm
+    # Ask to confirm
     confirm = Prompt.ask(
         "[yellow]Proceed with installation?[/yellow]", choices=["y", "n"], default="n"
     )
@@ -99,7 +95,7 @@ def install(name, source):
             f"[red]❌ No metadata returned; install may have failed[/]"
         )
 
-    # Write to registry
+    # Write registry
     reg = read_registry(REGISTRY)
     reg[name] = {
         "source": source,
@@ -249,9 +245,6 @@ def list_processes():
 
 
 def _silent_clone(url, path, checkout_branch=None, depth=0):
-    """
-    Suppress libgit2 C-level output, then clone.
-    """
     devnull = os.open(os.devnull, os.O_RDWR)
     orig_out, orig_err = os.dup(1), os.dup(2)
     os.dup2(devnull, 1)
