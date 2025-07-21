@@ -1,4 +1,3 @@
-# backends/__init__.py
 from .aur import *
 from .default import *
 from .github import *
