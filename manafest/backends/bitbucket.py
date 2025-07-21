@@ -1,4 +1,3 @@
-# backends/bitbucket.py
 import requests
 import subprocess
 import shutil
@@ -33,7 +32,6 @@ def info(name):
 
 
 def install(name):
-    """Just `git clone` the Bitbucket repo."""
     url = f"https://bitbucket.org/{name}.git"
     try:
         subprocess.run(["git", "clone", url], check=True)
