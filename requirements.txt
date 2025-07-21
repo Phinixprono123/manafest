@@ -1,0 +1,4 @@
+rich
+psutil
+pygit2
+requests

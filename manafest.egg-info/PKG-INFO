@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: manafest
+Version: 0.1.0
+Summary: Manafest: multi-backend package manager
+Author: Alkama Sudad
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent
+Requires-Dist: rich
+Requires-Dist: psutil
+Requires-Dist: pygit2
+Requires-Dist: requests
+Dynamic: author
+Dynamic: classifier
+Dynamic: requires-dist
+Dynamic: summary
