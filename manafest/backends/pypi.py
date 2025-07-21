@@ -1,5 +1,3 @@
-# backends/pypi.py
-
 import xmlrpc.client
 import logging
 
@@ -14,10 +12,8 @@ def search(query):
     try:
         client = xmlrpc.client.ServerProxy(PYPI_RPC)
         hits = client.search({"name": query}, "or")
-        # Sort by relevance (downloads or score) is possible; we'll just take first 10
         return [hit["name"] for hit in hits[:10]]
     except Exception as e:
-        # log at DEBUG so we don’t scare the user
         logging.debug(f"PyPI search failed for {query!r}: {e}")
         return []
 
