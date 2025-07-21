@@ -1,3 +1,4 @@
+aiohttp
 rich
 psutil
 pygit2
