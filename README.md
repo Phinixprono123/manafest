@@ -5,7 +5,11 @@ manafest is an awesome fast visually appealing package manager. It is made to fi
 **manafest has ony been tested on archlinux. So there can be some issues on operating systems. If you do encounter some errors or bug, please report them here**
 
 # Installation
-To install manafest you can just do 
+### 1. install dependencies
+```
+pip install -r requirements.txt
+```
+### 2. install manafest
 ```
 pip install git+https://github.com/Phinixprono123/manafest.git 
 ```
