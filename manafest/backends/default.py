@@ -1,10 +1,7 @@
-# backends/default.py
-
 import subprocess
 import logging
 from manafest.utils.osdetect import get_os, get_distro
 
-# Create a logger just for this module and bump its level to INFO
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
