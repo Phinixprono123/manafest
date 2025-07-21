@@ -14,3 +14,14 @@ pip install -r requirements.txt
 pip install git+https://github.com/Phinixprono123/manafest.git 
 ```
 
+
+
+## Example preview
+### Search
+![Manafest search preview](https://github.com/Phinixprono123/manafest/blob/main/assets/manafestsearch.png)
+
+### Install
+![Manafest install preview](https://github.com/Phinixprono123/manafest/blob/main/assets/manafestinstall.png)
+
+### Remove
+![Manafest remove preview](https://github.com/Phinixprono123/manafest/blob/main/assets/manafestinstall.png)
