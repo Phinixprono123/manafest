@@ -1,4 +1,3 @@
-# backends/gitlab.py
 import requests
 import subprocess
 import shutil
@@ -16,7 +15,7 @@ def search(query):
 
 
 def info(name):
-    """Fetch single‐project info by URL‐encoded path."""
+    """Fetch single‐project info by URL"""
     try:
         url = f"https://gitlab.com/api/v4/projects/{requests.utils.requote_uri(name)}"
         r = requests.get(url, timeout=5)
@@ -33,7 +32,6 @@ def info(name):
 
 
 def install(name):
-    """Just `git clone` the GitLab repo."""
     url = f"https://gitlab.com/{name}.git"
     try:
         subprocess.run(["git", "clone", url], check=True)
@@ -43,7 +41,6 @@ def install(name):
 
 
 def remove(name):
-    """Delete the cloned directory."""
     try:
         shutil.rmtree(name, ignore_errors=True)
         return True
