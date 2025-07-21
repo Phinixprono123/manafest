@@ -1,8 +1,0 @@
-[DEBUG main] args: Namespace(action='search', target='oneko', aur=True, github=False, gitlab=False, pypi=False, bitbucket=False, url=False, all=False, depth=None, branch=None, out=None)
-[DEBUG main] using sources: ['aur']
-[DEBUG search] query='oneko', source='aur'
-[DEBUG search] calling aur.search()
-[DEBUG search] raw results from aur: ['koneko-git', 'oneko']
-[+] Results from 'aur':
- • koneko-git
- • oneko
