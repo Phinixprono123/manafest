@@ -11,11 +11,12 @@ manafest.egg-info/requires.txt
 manafest.egg-info/top_level.txt
 manafest/backends/__init__.py
 manafest/backends/aur.py
-manafest/backends/bitbucket.py
 manafest/backends/default.py
-manafest/backends/github.py
-manafest/backends/gitlab.py
+manafest/backends/flatpak.py
 manafest/backends/pypi.py
+manafest/backends/registry.py
+manafest/backends/snap.py
+manafest/backends/webrepo.py
 manafest/utils/__init__.py
 manafest/utils/cache.py
 manafest/utils/errors.py

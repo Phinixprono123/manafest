@@ -9,6 +9,7 @@ Requires-Dist: rich
 Requires-Dist: psutil
 Requires-Dist: pygit2
 Requires-Dist: requests
+Requires-Dist: aiohttp
 Dynamic: author
 Dynamic: classifier
 Dynamic: requires-dist

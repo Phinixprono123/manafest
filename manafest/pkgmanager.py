@@ -1,314 +1,321 @@
-import os
-import logging
+# manafest/pkgmanager.py
+
+import subprocess
+import sys
 import asyncio
 import json
+import shutil
+import logging
+
 from pathlib import Path
 from datetime import datetime
 
-import psutil
-import pygit2
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.text import Text
 from rich.table import Table
 
 from manafest.utils.errors import handle_errors
 from manafest.utils.cache import read_registry, write_registry
-from manafest.backends import default, aur, github, gitlab, pypi, bitbucket
+from manafest.backends import default, aur, flatpak, snap, pypi
+from manafest.utils.osdetect import get_os, get_distro
 
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-
+logger = logging.getLogger("manafest")
 console = Console()
-REGISTRY = Path(__file__).parent / "registry.json"
+
+REGISTRY = Path(__file__).parent.parent / "registry.json"
 BACKENDS = {
     "default": default,
     "aur": aur,
-    "github": github,
-    "gitlab": gitlab,
-    "pypi": pypi,
-    "bitbucket": bitbucket,
+    "flatpak": flatpak,
+    "snap": snap,
+    "pypi": pypi
 }
 
+HAS_FLATPAK = shutil.which("flatpak") is not None
+HAS_SNAP    = shutil.which("snap")    is not None
 
-def _show_banner(message: str, style: str = "green"):
-    console.rule(Text(message, style=style))
 
-
-def _maybe_await(func, *args, **kwargs):
-    """
-    Call func(*args, **kwargs). If it returns a coroutine, run it to completion.
-    """
-    out = func(*args, **kwargs)
+def _maybe_await(fn, *args, **kwargs):
+    out = fn(*args, **kwargs)
     if asyncio.iscoroutine(out):
         return asyncio.get_event_loop().run_until_complete(out)
     return out
 
 
 @handle_errors
-def install(name, source):
+def install(name: str, source: str, force: bool = False):
     if not name:
         raise ValueError("install requires a package name")
 
-    # Try to get package metadata for panel
-    info_data = {}
-    if hasattr(BACKENDS[source], "info"):
-        try:
-            raw = _maybe_await(BACKENDS[source].info, name) or {}
-            # Ensure dict
-            info_data = raw if isinstance(raw, dict) else {}
-        except Exception:
-            info_data = {}
+    # block missing runtimes
+    if source == "flatpak" and not HAS_FLATPAK:
+        return console.print("[red]Flatpak not installed[/red]")
+    if source == "snap"    and not HAS_SNAP:
+        return console.print("[red]Snap not installed[/red]")
 
-    lines = [
-        f"[bold]Package[/bold]: {name}",
-        f"[bold]Source[/bold]: {source.capitalize()}",
-    ]
-    for key in ("description", "version", "stars", "web_url"):
-        if info_data.get(key):
-            lines.append(f"[bold]{key.capitalize()}[/bold]: {info_data[key]}")
+    # block AUR off-Arch
+    if source == "aur":
+        distro = get_distro() if get_os()=="linux" else None
+        if distro != "arch" and not force:
+            return console.print(
+                "[red]❌ AUR only on Arch-based systems. Use --force to override.[/red]"
+            )
 
-    panel = Panel(
-        "\n".join(lines),
-        title=Text("Ready to Install", style="cyan bold"),
-        border_style="cyan",
-    )
-    console.print(panel)
+    # preview metadata
+    if source == "default":
+        meta = default.info(name)
+    elif hasattr(BACKENDS[source], "info"):
+        meta = _maybe_await(BACKENDS[source].info, name) or {}
+    else:
+        meta = {}
 
-    # Ask to confirm
-    confirm = Prompt.ask(
-        "[yellow]Proceed with installation?[/yellow]", choices=["y", "n"], default="n"
-    )
-    if confirm != "y":
-        return console.print("[red]❌ Installation cancelled[/]")
+    console.print(Panel.fit(
+        "\n".join([
+            f"[bold]Package[/bold]: {meta.get('name', name)}",
+            f"[bold]Source[/bold]: {source.capitalize()}",
+            f"[bold]Version[/bold]: {meta.get('version','-')}",
+            f"[bold]Arch[/bold]: {meta.get('arch','-')}",
+            f"[bold]Summary[/bold]: {meta.get('summary','-')}"
+        ]),
+        title="[cyan]Ready to Install[/cyan]",
+        border_style="cyan"
+    ))
+    if Prompt.ask("Proceed?", choices=["y","n"], default="n") != "y":
+        return console.print("[yellow]Cancelled[/yellow]")
 
-    _show_banner(f"Installing {name}")
-    try:
-        raw_meta = _maybe_await(BACKENDS[source].install, name) or {}
-        # normalize to dict
-        meta = raw_meta if isinstance(raw_meta, dict) else {"raw": raw_meta}
-    except Exception as e:
-        return console.print(f"[red]❌ Error during install: {e}[/]")
+    console.print(f"[cyan]Installing {name}...[/cyan]")
+    ok = _maybe_await(BACKENDS[source].install, name)
+    if not ok:
+        return console.print(f"[red]❌ install failed[/red]")
 
-    if not meta:
-        return console.print(
-            f"[red]❌ No metadata returned; install may have failed[/]"
-        )
+    # record registry
+    fresh = (default.info(name) if source=="default"
+             else _maybe_await(BACKENDS[source].info, name) or {})
+    entry = fresh if isinstance(fresh, dict) and fresh else {"name":name}
 
-    # Write registry
     reg = read_registry(REGISTRY)
     reg[name] = {
         "source": source,
-        "info": meta,
-        "installed_at": datetime.utcnow().isoformat(),
+        "info": entry,
+        "installed_at": datetime.utcnow().isoformat()
     }
     write_registry(REGISTRY, reg)
 
-    console.print(f"[bold green]✅ {name} installed successfully![/bold green]\n")
+    console.print(Panel.fit(
+        f"[bold green]✔️ Installed {entry.get('name')} {entry.get('version','')}[/bold green]",
+        border_style="green"
+    ))
 
 
 @handle_errors
-def remove(name):
+def remove(name: str):
     if not name:
         raise ValueError("remove requires a package name")
 
     reg = read_registry(REGISTRY)
-    if name not in reg:
-        return console.print(f"[red]❌ '{name}' is not installed[/]")
+    if name in reg:
+        src = reg[name]["source"]
+        meta = (default.info(name) if src=="default" else reg[name]["info"])
+    elif default.installed(name):
+        src = "default"
+        meta = default.info(name)
+    else:
+        return console.print(f"[red]❌ '{name}' not found[/red]")
 
-    meta = reg[name]
-    source = meta["source"]
-    installed_at = meta.get("installed_at", "unknown")
+    console.print(Panel.fit(
+        "\n".join([
+            f"[bold]Package[/bold]: {meta.get('name', name)}",
+            f"[bold]Source[/bold]: {src.capitalize()}",
+            f"[bold]Version[/bold]: {meta.get('version','-')}",
+            f"[bold]Arch[/bold]: {meta.get('arch','-')}"
+        ]),
+        title="[magenta]Confirm Removal[/magenta]",
+        border_style="magenta"
+    ))
+    if Prompt.ask("Remove?", choices=["y","n"], default="n") != "y":
+        return console.print("[yellow]Aborted[/yellow]")
 
-    lines = [
-        f"[bold]Package[/bold]: {name}",
-        f"[bold]Source[/bold]: {source.capitalize()}",
-        f"[bold]Installed at[/bold]: {installed_at}",
-    ]
-    panel = Panel(
-        "\n".join(lines),
-        title=Text("About to Remove", style="magenta bold"),
-        border_style="magenta",
-    )
-    console.print(panel)
+    console.print(f"[magenta]Removing {name}...[/magenta]")
+    if src == "default":
+        cmd = default._select_cmd("remove", name)
+    else:
+        cmd = BACKENDS[src]._select_cmd("remove", name)
 
-    confirm = Prompt.ask(
-        "[yellow]Really remove this package?[/yellow]", choices=["y", "n"], default="n"
-    )
-    if confirm != "y":
-        return console.print("[red]❌ Removal cancelled[/]")
-
-    _show_banner(f"Removing {name}", style="magenta")
-    try:
-        success = _maybe_await(BACKENDS[source].remove, name)
-    except Exception as e:
-        return console.print(f"[red]❌ Error during removal: {e}[/]")
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, stdin=sys.stdin, text=True)
+    logs = proc.stdout.splitlines()
+    success = proc.returncode == 0
+    snippet = "\n".join(logs[-5:])
 
     if success:
-        del reg[name]
-        write_registry(REGISTRY, reg)
-        console.print(f"[bold green]✔️ {name} removed successfully![/bold green]\n")
+        if name in reg and reg[name]["source"]==src:
+            reg.pop(name)
+            write_registry(REGISTRY, reg)
+        console.print(Panel.fit(
+            f"[bold green]✔️ Removed {meta.get('name')} {meta.get('version')}[/bold green]\n\n{snippet}",
+            border_style="green"
+        ))
     else:
-        console.print(f"[red]❌ Failed to remove {name}[/]")
+        console.print(Panel.fit(
+            f"[bold red]❌ Removal failed[/bold red]\n\n{snippet}",
+            border_style="red"
+        ))
 
 
 @handle_errors
-def list_installed(all_sources=False):
+def search(query: str, sources: list[str]):
+    if not query:
+        raise ValueError("search requires a query")
+
+    console.print(f"[bold cyan]🔍 Searching for [green]{query}[/green]…[/]\n")
+    for src in sources:
+        if src=="flatpak" and not HAS_FLATPAK: continue
+        if src=="snap"    and not HAS_SNAP:    continue
+
+        try:
+            pkgs = BACKENDS[src].search(query) or []
+        except Exception as e:
+            logger.debug(f"{src}.search failed: {e}")
+            pkgs = []
+
+        table = Table(title=f"[magenta]{src.capitalize()} Results[/magenta]", show_lines=True)
+        table.add_column("Name", style="cyan", no_wrap=True)
+        table.add_column("Version", style="green")
+        table.add_column("Arch", style="yellow")
+        table.add_column("Summary", style="white")
+
+        if not pkgs:
+            table.add_row("-", "-", "-", "No results")
+        else:
+            for p in pkgs:
+                if isinstance(p, dict):
+                    n=p.get("name","-"); v=p.get("version","-")
+                    a=p.get("arch","-");   s=p.get("summary","-")
+                else:
+                    n,v,a,s = p,"-","-","-"
+                table.add_row(n,v,a,s)
+
+        console.print(table); console.print()
+
+
+@handle_errors
+def list_installed():
     reg = read_registry(REGISTRY)
     if not reg:
         return console.print("[bold]No packages installed[/]")
 
-    console.print("[bold]Installed Packages[/bold]")
-    table = Table()
-    table.add_column("Package", style="cyan")
-    table.add_column("Source", style="magenta")
-    table.add_column("Installed At", style="green")
-
-    for name, meta in reg.items():
-        table.add_row(name, meta["source"].capitalize(), meta.get("installed_at", "-"))
+    table = Table(title="Installed by Manafest")
+    table.add_column("Name", style="cyan"); table.add_column("Version", style="green")
+    table.add_column("Arch", style="yellow"); table.add_column("Source", style="magenta")
+    table.add_column("When", style="white")
+    for pkg,data in reg.items():
+        info = data["info"]
+        table.add_row(
+            info.get("name",pkg),
+            info.get("version","-"),
+            info.get("arch","-"),
+            data["source"].capitalize(),
+            data.get("installed_at","-")
+        )
     console.print(table)
 
 
 @handle_errors
-def info(name):
+def info(name: str):
     if not name:
         raise ValueError("info requires a package name")
 
     reg = read_registry(REGISTRY)
     if name in reg:
-        console.print(f"[bold cyan]ℹ️ Local info for {name}[/]")
-        console.print_json(json.dumps(reg[name]["info"], indent=2))
+        console.print(Panel.fit(
+            json.dumps(reg[name]["info"], indent=2),
+            title=f"[cyan]Local info: {name}[/cyan]"
+        ))
         return
 
-    console.print(f"[cyan]Fetching remote info for [green]{name}[/green]…[/]")
-    loop = asyncio.get_event_loop()
-    tasks = [
-        loop.create_task(BACKENDS[src].info(name))
-        for src in BACKENDS
-        if hasattr(BACKENDS[src], "info")
-    ]
-    results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-
-    console.print(f"[bold]Info for [green]{name}[/green][/bold]")
-    for src, res in zip(BACKENDS.keys(), results):
-        label = f"[magenta]{src.capitalize()}[/magenta]"
-        if isinstance(res, Exception) or not res:
-            console.print(label, "[red]No info[/red]")
-        else:
-            console.print(label)
-            console.print_json(json.dumps(res, indent=2))
-
-
-@handle_errors
-def search(query, sources):
-    if not query:
-        raise ValueError("search requires a query")
-
-    console.print(f"[bold cyan]🔍 Searching for [green]{query}[/green]…[/]")
-
-    all_results = []
-    total = 0
-    for src in sources:
-        try:
-            pkgs = BACKENDS[src].search(query) or []
-        except Exception as e:
-            logging.debug(f"{src}.search() failed: {e}")
-            pkgs = []
-        total += len(pkgs)
-        all_results.append((src, pkgs))
-
-    if total > 20:
-        confirm = Prompt.ask(
-            f"[yellow]⚠️ Found {total} results across {len(sources)} sources. Show all?[/yellow]",
-            choices=["y", "n"],
-            default="n",
-        )
-        if confirm != "y":
-            return console.print("[red]📋 Display aborted[/]")
-
-    for src, pkgs in all_results:
-        console.print(f"\n[bold magenta]{src.capitalize()}[/bold magenta]")
-        if not pkgs:
-            console.print("  [red]No results[/red]")
-        else:
-            for pkg in pkgs:
-                console.print(f"  • [green]{pkg}[/green]")
-
-
-@handle_errors
-def list_processes():
-    console.print("[bold]Active package-related processes:[/]")
-    for proc in psutil.process_iter(["pid", "cmdline"]):
-        cmd = proc.info["cmdline"] or []
-        if cmd and any(tool in cmd[0] for tool in BACKENDS):
-            console.print(f"• PID {proc.pid}: {' '.join(cmd)}")
-
-
-def _silent_clone(url, path, checkout_branch=None, depth=0):
-    devnull = os.open(os.devnull, os.O_RDWR)
-    orig_out, orig_err = os.dup(1), os.dup(2)
-    os.dup2(devnull, 1)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    try:
-        return pygit2.clone_repository(
-            url, path, checkout_branch=checkout_branch, depth=depth
-        )
-    finally:
-        os.dup2(orig_out, 1)
-        os.dup2(orig_err, 2)
-        os.close(orig_out)
-        os.close(orig_err)
-
-
-@handle_errors
-def clone(repo, source, depth=None, branch=None, outdir=None):
-    if not repo:
-        raise ValueError("clone requires a repo")
-
-    url = (
-        f"https://github.com/{repo}.git"
-        if source == "github" and not repo.startswith(("http://", "https://", "git@"))
-        else repo
-    )
-    path = outdir or os.path.splitext(os.path.basename(url))[0] or "repo"
-
-    console.print(f"[cyan]🔧 Cloning {url} → {path}[/]")
-    repo_obj = _silent_clone(url, path, checkout_branch=branch, depth=depth or 0)
-    console.print(f"[green]✅ Cloned into {path}[/]")
-
-    head = repo_obj.revparse_single("HEAD")
-    cid = str(head.id)
-    console.print(f"    HEAD at {cid[:7]}: {head.message.strip()}")
-
-
-@handle_errors
-def update(sources):
-    console.print(f"[yellow]🔄 Updating metadata for {sources}…[/]")
-    for src in sources:
-        if hasattr(BACKENDS[src], "update"):
+    console.print(f"[cyan]Fetching info for [green]{name}[/green]…[/]")
+    for src,mod in BACKENDS.items():
+        if src=="flatpak" and not HAS_FLATPAK: continue
+        if src=="snap"    and not HAS_SNAP:    continue
+        if hasattr(mod,"info"):
             try:
-                BACKENDS[src].update()
-                console.print(f"[green]✔️ {src.capitalize()} updated[/]")
-            except Exception as e:
-                console.print(f"[red]⚠️ {src}.update() failed: {e}[/]")
-        else:
-            console.print(f"[red]⚠️ {src.capitalize()} has no update command[/]")
+                data = _maybe_await(mod.info, name) or {}
+            except:
+                data = {}
+            if not data:
+                console.print(f"[magenta]{src.capitalize()}[/magenta] [red]No info[/red]")
+            else:
+                console.print(Panel.fit(
+                    json.dumps(data, indent=2),
+                    title=f"[magenta]{src.capitalize()}[/magenta]"
+                ))
 
 
 @handle_errors
-def upgrade():
-    reg = read_registry(REGISTRY)
-    if not reg:
-        return console.print("[bold]No packages to upgrade[/]")
-    console.print("[green]⬆️ Upgrading installed packages…[/]")
-    for name, meta in reg.items():
-        src = meta["source"]
-        console.print(
-            f" • Upgrading [cyan]{name}[/cyan] via [magenta]{src.capitalize()}[/magenta]"
-        )
-        try:
-            _maybe_await(BACKENDS[src].install, name)
-        except Exception as e:
-            console.print(f"[red]✖️ Upgrade failed for {name}: {e}[/]")
-    console.print("[bold green]✅ Upgrade complete[/]")
+def update(sources: list[str], force: bool = False):
+    console.print(f"[yellow]🔄 Updating backends: {', '.join(sources)}[/yellow]")
+    for src in sources:
+        if src=="aur":
+            distro = get_distro() if get_os()=="linux" else None
+            if distro!="arch" and not force:
+                console.print("[red]❌ Skipping AUR (Arch only). --force to override[/red]")
+                continue
+        if src=="flatpak" and not HAS_FLATPAK: continue
+        if src=="snap"    and not HAS_SNAP:    continue
+
+        backend = BACKENDS[src]
+        if src=="pypi":
+            # pip-based update = list & upgrade outdated
+            try:
+                out = subprocess.check_output(
+                    ["pip","list","--outdated","--format=json"],
+                    text=True, stderr=subprocess.DEVNULL
+                )
+                data = json.loads(out)
+                if not data:
+                    console.print("[green]All pip packages up-to-date[/green]")
+                else:
+                    console.print(f"[cyan]Upgrading {len(data)} pip packages...[/cyan]")
+                    for p in data:
+                        subprocess.check_call(["pip","install","--upgrade",p["name"]])
+                    console.print("[green]✔️ pip packages upgraded[/green]")
+                continue
+            except Exception:
+                console.print("[red]❌ pip update failed[/red]")
+                continue
+
+        if hasattr(backend, "update"):
+            ok = _maybe_await(backend.update)
+            label = src.capitalize()
+            console.print(f"[green]✔️ {label} updated[/green]" if ok
+                          else f"[red]❌ {label} update failed[/red]")
+        else:
+            console.print(f"[red]⚠️ {src.capitalize()} cannot update[/red]")
+
+
+@handle_errors
+def upgrade(sources: list[str], force: bool = False):
+    console.print(f"[yellow]⬆️ Upgrading backends: {', '.join(sources)}[/yellow]")
+    for src in sources:
+        if src=="aur":
+            distro = get_distro() if get_os()=="linux" else None
+            if distro!="arch" and not force:
+                console.print("[red]❌ Skipping AUR (Arch only). --force to override[/red]")
+                continue
+        if src=="flatpak" and not HAS_FLATPAK: continue
+        if src=="snap"    and not HAS_SNAP:    continue
+
+        backend = BACKENDS[src]
+        if src=="pypi":
+            # pip upgrade is same as update above
+            # already done in update()
+            continue
+
+        if hasattr(backend, "upgrade"):
+            ok = _maybe_await(backend.upgrade)
+            label = src.capitalize()
+            console.print(f"[green]✔️ {label} upgraded[/green]" if ok
+                          else f"[red]❌ {label} upgrade failed[/red]")
+        else:
+            console.print(f"[red]⚠️ {src.capitalize()} cannot upgrade[/red]")

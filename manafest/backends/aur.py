@@ -1,61 +1,122 @@
-import asyncio
-import aiohttp
-import logging
+# manafest/backends/aur.py
+
 import subprocess
-from functools import lru_cache
-from pathlib import Path
+import logging
+import shutil
 
-AUR_SEARCH = "https://aur.archlinux.org/rpc/?v=5&type=search&arg="
-AUR_INFO = "https://aur.archlinux.org/rpc/?v=5&type=info&arg="
+logger = logging.getLogger("manafest.backends.aur")
+logger.setLevel(logging.INFO)
 
+def _helper() -> str | None:
+    """
+    Return the first available AUR helper binary.
+    """
+    for helper in ("yay", "paru", "pikaur"):
+        if shutil.which(helper):
+            return helper
+    return None
 
-@lru_cache(maxsize=128)
-async def _fetch(url):
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(timeout=timeout) as sess:
-        async with sess.get(url) as r:
-            r.raise_for_status()
-            return await r.json()
-
-
-def search(query):
+def search(query: str) -> list[dict]:
+    helper = _helper()
+    if not helper:
+        return []
     try:
-        data = asyncio.run(_fetch(AUR_SEARCH + query))
-        return [p["Name"] for p in data.get("results", [])]
-    except Exception as e:
-        logging.warning("AUR search failed: %s", e)
+        out = subprocess.check_output(
+            [helper, "-Ss", query],
+            stderr=subprocess.DEVNULL,
+            timeout=60
+        ).decode().splitlines()
+    except Exception:
         return []
 
+    results = []
+    for line in out:
+        # Format: pkgname optional_colon description
+        if not line.strip() or not line.startswith(query):
+            continue
+        name, _, rest = line.partition(":")
+        summary = rest.strip()
+        results.append({
+            "name": name.strip(),
+            "version": "",
+            "arch": "",
+            "summary": summary
+        })
+    return results
 
-async def info(name):
+def install(name: str) -> bool:
+    helper = _helper()
+    if not helper:
+        return False
+    cmd = [helper, "-S", "--noconfirm", name]
     try:
-        data = await _fetch(AUR_INFO + name)
-        return data.get("results", {})
-    except Exception as e:
-        logging.warning("AUR info failed: %s", e)
-        return {}
-
-
-def install(name):
-    try:
-        clone_dir = Path("/tmp") / f"aur_{name}"
-        if clone_dir.exists():
-            subprocess.run(["rm", "-rf", str(clone_dir)])
-        subprocess.run(
-            ["git", "clone", f"https://aur.archlinux.org/{name}.git", str(clone_dir)],
-            check=True,
-        )
-        subprocess.run(["makepkg", "-si", "--noconfirm"], cwd=clone_dir, check=True)
-        return {"path": str(clone_dir)}
-    except Exception as e:
-        logging.error("AUR install failed: %s", e)
-        return {}
-
-
-def remove(name):
-    try:
-        subprocess.run(["sudo", "pacman", "-Rsn", "--noconfirm", name], check=True)
+        subprocess.check_call(cmd)
         return True
     except Exception as e:
-        logging.error("AUR remove failed: %s", e)
+        logger.debug("AUR install failed %s → %s", cmd, e)
         return False
+
+def remove(name: str) -> bool:
+    helper = _helper()
+    if not helper:
+        return False
+    cmd = [helper, "-Rns", "--noconfirm", name]
+    try:
+        subprocess.check_call(cmd)
+        return True
+    except Exception as e:
+        logger.debug("AUR remove failed %s → %s", cmd, e)
+        return False
+
+def info(name: str) -> dict:
+    helper = _helper()
+    if not helper:
+        return {}
+    try:
+        out = subprocess.check_output(
+            [helper, "-Si", name],
+            stderr=subprocess.DEVNULL,
+            timeout=60
+        ).decode().splitlines()
+    except Exception:
+        return {}
+
+    data = {}
+    for line in out:
+        if line.startswith("Name"):
+            data["name"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Version"):
+            data["version"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Architecture"):
+            data["arch"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Description"):
+            data["summary"] = line.split(":", 1)[1].strip()
+            break
+
+    return {
+        "name": data.get("name", name),
+        "version": data.get("version", "-"),
+        "arch": data.get("arch", "-"),
+        "summary": data.get("summary", "-")
+    }
+
+def update() -> bool:
+    helper = _helper()
+    if not helper:
+        return False
+    try:
+        subprocess.check_call([helper, "-Sy"])
+        return True
+    except Exception:
+        return False
+
+def upgrade() -> bool:
+    helper = _helper()
+    if not helper:
+        return False
+    try:
+        subprocess.check_call([helper, "-Syu", "--noconfirm"])
+        return True
+    except Exception:
+        return False
+

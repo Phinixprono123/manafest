@@ -2,8 +2,6 @@
 import sys
 import argparse
 from rich.console import Console
-from rich.text import Text
-
 from manafest.pkgmanager import (
     install, search, remove,
     list_installed, info,
@@ -11,7 +9,6 @@ from manafest.pkgmanager import (
 )
 
 console = Console()
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -22,12 +19,14 @@ def parse_args():
 
     parser.add_argument("action", choices=[
         "install", "search", "remove",
-        "list", "info", "update", "upgrade"
+        "list", "info", "ps",
+        "update", "upgrade"
     ], help="Action to perform")
 
     parser.add_argument("target", nargs="?", help="Package name or search query")
 
-    parser.add_argument("--default", action="store_true", help="Use system backend")
+    # backend selectors
+    parser.add_argument("--default", action="store_true", help="Use system (apt/dnf/pacman/brew/pip)")
     parser.add_argument("--aur",     action="store_true", help="Use AUR backend")
     parser.add_argument("--flatpak", action="store_true", help="Use Flatpak backend")
     parser.add_argument("--snap",    action="store_true", help="Use Snap backend")
@@ -41,17 +40,15 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Override backend‐OS checks (e.g. AUR on non-Arch)"
+        help="Ignore unsupported-OS warnings"
     )
 
     return parser.parse_args()
 
-
 def main():
     args = parse_args()
-    force = args.force
 
-    # build list of chosen backends
+    # gather the chosen backends
     chosen = []
     if args.default: chosen.append("default")
     if args.aur:     chosen.append("aur")
@@ -59,47 +56,33 @@ def main():
     if args.snap:    chosen.append("snap")
     if args.pypi:    chosen.append("pypi")
 
-    all_backends = ["default", "aur", "flatpak", "snap", "pypi"]
-    if args.all and args.action in ("search", "update", "upgrade"):
+    all_backends = ["default","aur","flatpak","snap","pypi"]
+    if args.all and args.action in ("search","update","upgrade"):
         sources = all_backends
     else:
+        # default to system if nothing selected
         sources = chosen or ["default"]
 
     try:
-        act = args.action
-        tgt = args.target
-
-        if act == "install":
-            # install(name, source, force)
-            install(tgt, sources[0], force)
-
-        elif act == "search":
-            search(tgt, sources)
-
-        elif act == "remove":
-            remove(tgt)
-
-        elif act == "list":
+        if args.action == "install":
+            install(args.target, sources[0])
+        elif args.action == "search":
+            search(args.target, sources)
+        elif args.action == "remove":
+            remove(args.target)
+        elif args.action == "list":
             list_installed()
-
-        elif act == "info":
-            info(tgt)
-
-        elif act == "update":
-            # update(sources, force)
-            update(sources, force)
-
-        elif act == "upgrade":
-            # upgrade(sources, force)
-            upgrade(sources, force)
-
-    except KeyboardInterrupt:
-        console.print("\n[bold red]✖️ Operation cancelled by user[/bold red]")
-        sys.exit(1)
+        elif args.action == "info":
+            info(args.target)
+        elif args.action == "ps":
+            list_processes()
+        elif args.action == "update":
+            update(sources)
+        elif args.action == "upgrade":
+            upgrade(sources)
     except Exception as e:
         console.print(f"[bold red]Fatal error:[/] {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
